@@ -1,0 +1,9 @@
+[project]
+name = "maduna-scanner-ingestion"
+version = "0.1.0"
+description = "Bookmaker scrapers for the MadunaCapital arbitrage scanner"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
