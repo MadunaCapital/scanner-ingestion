@@ -1,8 +1,27 @@
 [project]
 name = "maduna-scanner-ingestion"
 version = "0.1.0"
-description = "Bookmaker scrapers for the MadunaCapital arbitrage scanner"
+description = "Shared scraper toolkit for the MadunaCapital arbitrage scanner: BaseScraper plus optional anti-bot evasion infrastructure, consumed by per-bookmaker repos"
 requires-python = ">=3.11"
+dependencies = []
+
+# Base install (BaseScraper, ProxyConfig) has zero dependencies deliberately
+# -- a bookmaker adapter that only needs a plain HTTP client (like Betway ZA's)
+# shouldn't be forced to install curl_cffi/Playwright it will never use.
+[project.optional-dependencies]
+stealth = [
+    "curl_cffi>=0.6",
+    "playwright>=1.40",
+    "playwright-stealth>=1.0",
+    "orjson>=3.9",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
