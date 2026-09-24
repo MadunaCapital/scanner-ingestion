@@ -3,7 +3,10 @@ name = "maduna-scanner-ingestion"
 version = "0.1.0"
 description = "Shared scraper toolkit for the MadunaCapital arbitrage scanner: BaseScraper plus optional anti-bot evasion infrastructure, consumed by per-bookmaker repos"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "redis>=5.0",
+    "maduna-scanner-schemas @ git+https://github.com/MadunaCapital/scanner-schemas.git#subdirectory=python",
+]
 
 # Base install (BaseScraper, ProxyConfig) has zero dependencies deliberately
 # -- a bookmaker adapter that only needs a plain HTTP client (like Betway ZA's)
