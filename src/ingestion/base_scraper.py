@@ -22,9 +22,11 @@ class BaseScraper(ABC):
         """Fetch the raw odds payload from the bookmaker. Implemented per-adapter."""
 
     @abstractmethod
-    def to_odds_event(self, raw: dict) -> dict:
-        """Map the bookmaker's raw payload onto the universal OddsEvent schema
-        (see scanner-schemas). Implemented per-adapter."""
+    def to_odds_events(self, raw: dict) -> list:
+        """Map the bookmaker's raw payload onto a list of the universal OddsEvent
+        schema (see scanner-schemas). A list because bookmaker feeds are bulk
+        endpoints returning many events/markets/odds in one response, not one
+        event per call. Implemented per-adapter."""
 
     def check_freshness(self, scraped_at: datetime) -> None:
         age = datetime.now(timezone.utc) - scraped_at

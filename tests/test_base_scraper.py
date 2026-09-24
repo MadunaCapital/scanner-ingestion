@@ -11,8 +11,8 @@ class _FakeScraper(BaseScraper):
     async def fetch_raw_odds(self) -> dict:
         return {}
 
-    def to_odds_event(self, raw: dict) -> dict:
-        return {}
+    def to_odds_events(self, raw: dict) -> list:
+        return []
 
 
 def test_check_freshness_passes_for_recent_data():

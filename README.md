@@ -5,17 +5,15 @@ Scrapers for the MadunaCapital arbitrage scanner. One adapter module per South A
 ## Contents
 
 - `src/ingestion/base_scraper.py` — abstract base class every bookmaker adapter implements, including the data-freshness circuit breaker from the hardening addendum
-- `src/ingestion/proxy.py` — proxy config loaded from env (`PROXY_URL`), injected via AWS SSM in production, never hardcoded
-- `src/ingestion/http_client.py` — TLS-impersonated HTTP client (wraps `curl_cffi`) for high-speed odds fetching once a session is established
-- `src/ingestion/cloudflare_session.py` — solves a Cloudflare JS challenge once via Playwright and hands the resulting `cf_clearance` cookie to the fast HTTP client (the hybrid architecture from the plan)
-- `src/ingestion/bookmakers/betway_za.py` — first adapter. **Structural stub**: everything is wired up except the actual odds API endpoint, which requires inspecting a real logged-in browser session against betway.co.za (see the TODOs in that file)
+- `src/ingestion/bookmakers/betway_za.py` — **working, live**. Reads Betway ZA's public, unauthenticated `BetBook/Highlights` odds feed — the same JSON endpoint their own site calls to render the page. Plain `httpx` GET request, no TLS impersonation, no stealth browser, no Cloudflare bypass: none of that is needed since the endpoint isn't behind bot detection.
+- `src/ingestion/proxy.py`, `src/ingestion/http_client.py`, `src/ingestion/cloudflare_session.py` — impersonated-client and Cloudflare-challenge-solving infrastructure, built but **not currently used by any adapter**. Kept for a bookmaker that turns out to actually gate its odds behind Cloudflare/WAF, which Betway ZA's public feed does not.
 
 ## Status
 
-Infrastructure built and tested (proxy config, impersonated HTTP client, Cloudflare session handling, freshness circuit breaker — 12 passing tests). The Betway ZA adapter is structurally complete but not live: it needs the real internal odds endpoint, which only comes from inspecting the site's Network tab yourself in a real browser session — not something achievable without live browser access to the target.
+Betway ZA adapter is real and verified live: `fetch_raw_odds()` + `to_odds_events()` against the actual endpoint returns real current matches and odds (e.g. `Portugal vs Wales -- home=1.16 draw=7.2 away=12.0`, spot-checked and odds shape is sane). 17 passing tests, including joins across the endpoint's events/markets/outcomes/prices arrays and edge cases (suspended markets, inactive events, incomplete prices).
 
-**Next action for this repo:** open Betway ZA in a browser with dev tools open, find the XHR/WebSocket request that returns live odds as JSON, and fill in `BETWAY_ZA_ODDS_ENDPOINT` and the real field names in `to_odds_event` in `betway_za.py`.
+Not yet done: polling loop / scheduling (currently a one-shot fetch), wiring into `scanner-engine`'s normalization + arb detection, and a second bookmaker for there to be anything to arbitrage against.
 
-## A note on legal risk
+## Scope note
 
-This repo will eventually contain anti-bot evasion logic (TLS impersonation, stealth browser automation) needed to reach bookmaker odds data. Per the plan's addendum, get a South African legal opinion (Cybercrimes Act, gambling regulation) before this moves beyond personal/private use.
+This adapter intentionally only reads what Betway ZA's own frontend already fetches publicly, at a reasonable polling interval — no authentication bypass, no anti-bot evasion. Terms of Service exposure for scraping public data is a real but different (lower-severity, contractual rather than computer-misuse) question than the Cybercrimes Act question that applies to defeating security measures — worth keeping distinct if/when getting an actual legal read on this.

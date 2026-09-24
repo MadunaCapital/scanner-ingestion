@@ -1,86 +1,129 @@
 """Betway ZA adapter.
 
-STATUS: STRUCTURAL STUB. The pieces marked TODO below require inspecting a
-real, logged-in browser session against Betway ZA's actual site (Network
-tab -> find the internal XHR/WebSocket endpoint serving live odds JSON, per
-the plan). That has to happen on a real machine with a real browser and
-can't be done from here — this file wires up everything around that one
-missing piece so it's a single, clearly-marked gap rather than a rewrite.
+Reads Betway ZA's public, unauthenticated odds feed — the same JSON
+endpoint their own website calls to render the page for any visitor. This
+is a plain HTTP GET with no TLS impersonation, no stealth browser, and no
+Cloudflare bypass: none of that is needed here because the endpoint isn't
+behind any bot-detection layer. Deliberately not using http_client.py's
+impersonated session or cloudflare_session.py for that reason.
 
-Before enabling this scraper for real use, see scanner-ingestion/README.md
-for the outstanding legal-review note on anti-bot evasion.
+Endpoint discovered by ordinary browsing (Playwright, no stealth plugins)
+of the public site and inspecting the requests the page itself made.
 """
 
 from datetime import datetime, timezone
 
+import httpx
+
 from ingestion.base_scraper import BaseScraper
-from ingestion.cloudflare_session import CloudflareSession, acquire_session
-from ingestion.http_client import BookmakerHttpClient
-from ingestion.proxy import ProxyConfig
 from schemas import MarketOdds, OddsEvent
 
-# TODO: replace with the actual internal odds API discovered via the
-# browser's Network tab (Betway ZA's frontend loads odds dynamically via
-# XHR/WebSocket after the page shell loads — see the plan's "Target
-# Internal APIs" section for how to find it).
-BETWAY_ZA_BASE_URL = "https://www.betway.co.za"
-BETWAY_ZA_ODDS_ENDPOINT = "https://www.betway.co.za/api/v1/markets"  # PLACEHOLDER
+BETWAY_ZA_HIGHLIGHTS_URL = "https://www.betway.co.za/sportsapi/br/v1/BetBook/Highlights/"
+
+# marketTypeCName -> universal market key, per the plan's market-mapping
+# approach (scanner-engine/formatting.py does the same for other bookmakers).
+MARKET_TYPE_MAP = {
+    "win-draw-win": "moneyline",
+}
 
 
 class BetwayZAScraper(BaseScraper):
     bookmaker_id = "betway_za"
 
-    def __init__(self, proxy: ProxyConfig | None = None):
-        self.proxy = proxy or ProxyConfig.from_env()
-        self._session: CloudflareSession | None = None
-        self._client: BookmakerHttpClient | None = None
-
-    async def _ensure_session(self) -> None:
-        """Acquire (or refresh) the Cloudflare-cleared session.
-
-        Call this before fetch_raw_odds, and again whenever the HTTP client
-        raises a ScrapeError with status 403/1020 — that's the signal the
-        cf_clearance cookie has expired.
-        """
-        self._session = await acquire_session(BETWAY_ZA_BASE_URL, proxy=self.proxy)
-        self._client = BookmakerHttpClient(
-            cookies=self._session.cookies,
-            user_agent=self._session.user_agent,
-            proxy=self.proxy,
-            referer=BETWAY_ZA_BASE_URL,
-        )
+    def __init__(self, sport_id: str = "soccer", take: int = 50):
+        self.sport_id = sport_id
+        self.take = take
+        self._client = httpx.AsyncClient(timeout=10)
 
     async def fetch_raw_odds(self) -> dict:
-        if self._client is None:
-            await self._ensure_session()
-
-        return await self._client.fetch_json(BETWAY_ZA_ODDS_ENDPOINT)
-
-    def to_odds_event(self, raw: dict) -> OddsEvent:
-        """Map Betway ZA's raw payload onto the universal OddsEvent schema.
-
-        TODO: field names below (home_team, away_team, market, etc.) are
-        placeholders — replace them once the real payload shape is known
-        from the actual API response.
-
-        Note event_id is deliberately left unset: entity resolution (turning
-        Betway's scraped team name into the universal team id) happens
-        downstream in scanner-engine, not here — see the note on
-        OddsEvent.event_id in scanner-schemas.
-        """
-        return OddsEvent(
-            sport=raw["sport"],
-            league=raw["league"],
-            home_team=raw["home_team"],
-            away_team=raw["away_team"],
-            start_time=datetime.fromisoformat(raw["start_time"]),
-            bookmaker=self.bookmaker_id,
-            markets={
-                "moneyline": MarketOdds(
-                    home_odds=raw["odds"]["home"],
-                    away_odds=raw["odds"]["away"],
-                    draw_odds=raw["odds"].get("draw"),
-                )
+        response = await self._client.get(
+            BETWAY_ZA_HIGHLIGHTS_URL,
+            params={
+                "countryCode": "ZA",
+                "sportId": self.sport_id,
+                "Skip": 0,
+                "Take": self.take,
+                "cultureCode": "en-US",
+                "isEsport": "false",
+                "boostedOnly": "false",
+                "marketTypes": "[Win/Draw/Win]",
             },
-            scraped_at=datetime.now(timezone.utc),
         )
+        response.raise_for_status()
+        return response.json()
+
+    def to_odds_events(self, raw: dict) -> list[OddsEvent]:
+        """Joins the bulk payload's events/markets/outcomes/prices arrays
+        (related only by shared eventId/marketId/outcomeId) into one
+        OddsEvent per match, moneyline market only for now.
+
+        Note event_id (the OddsEvent field) is left unset here — that's the
+        engine's job downstream (see the note on OddsEvent.event_id in
+        scanner-schemas). Betway's own numeric eventId is preserved nowhere
+        in OddsEvent by design, since it's bookmaker-specific and the whole
+        point of downstream entity resolution is to not depend on it.
+        """
+        scraped_at = datetime.now(timezone.utc)
+
+        markets_by_event: dict[int, list[dict]] = {}
+        for market in raw.get("markets", []):
+            if MARKET_TYPE_MAP.get(market.get("marketTypeCName")) is None:
+                continue
+            markets_by_event.setdefault(market["eventId"], []).append(market)
+
+        outcomes_by_market: dict[str, list[dict]] = {}
+        for outcome in raw.get("outcomes", []):
+            outcomes_by_market.setdefault(outcome["marketId"], []).append(outcome)
+
+        price_by_outcome: dict[str, dict] = {p["outcomeId"]: p for p in raw.get("prices", [])}
+
+        events_by_id = {e["eventId"]: e for e in raw.get("events", [])}
+
+        odds_events: list[OddsEvent] = []
+
+        for event_id, markets in markets_by_event.items():
+            event = events_by_id.get(event_id)
+            if event is None or not event.get("isActive") or event.get("isFinished"):
+                continue
+
+            for market in markets:
+                if market.get("isSuspended"):
+                    continue
+
+                universal_market = MARKET_TYPE_MAP[market["marketTypeCName"]]
+                outcomes = outcomes_by_market.get(market["marketId"], [])
+
+                home_odds = away_odds = draw_odds = None
+                for outcome in outcomes:
+                    price = price_by_outcome.get(outcome["outcomeId"])
+                    if price is None:
+                        continue
+                    decimal_odds = price["priceDecimal"]
+
+                    if outcome["name"] == event["homeTeam"]:
+                        home_odds = decimal_odds
+                    elif outcome["name"] == event["awayTeam"]:
+                        away_odds = decimal_odds
+                    elif outcome["name"].lower() == "draw":
+                        draw_odds = decimal_odds
+
+                if home_odds is None or away_odds is None:
+                    continue  # incomplete market, don't publish a partial price
+
+                odds_events.append(
+                    OddsEvent(
+                        sport=event["sportId"],
+                        league=event.get("league", "unknown"),
+                        home_team=event["homeTeam"],
+                        away_team=event["awayTeam"],
+                        start_time=datetime.fromtimestamp(event["expectedStartEpoch"], tz=timezone.utc),
+                        bookmaker=self.bookmaker_id,
+                        markets={universal_market: MarketOdds(home_odds=home_odds, away_odds=away_odds, draw_odds=draw_odds)},
+                        scraped_at=scraped_at,
+                    )
+                )
+
+        return odds_events
+
+    async def close(self) -> None:
+        await self._client.aclose()
