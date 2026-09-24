@@ -1,3 +1,5 @@
+import pytest
+
 from ingestion.bookmakers.betway_za import BetwayZAScraper
 
 # Shape captured from a real, plain GET to Betway ZA's public
@@ -136,3 +138,48 @@ def test_to_odds_events_handles_multiple_events_independently():
 
     assert len(events) == 2
     assert {e.home_team for e in events} == {"Andorra", "TeamA"}
+
+
+@pytest.mark.asyncio
+async def test_poll_yields_events_on_a_fixed_interval(monkeypatch):
+    scraper = BetwayZAScraper()
+
+    async def fake_fetch_raw_odds():
+        return SAMPLE_RAW_PAYLOAD
+
+    monkeypatch.setattr(scraper, "fetch_raw_odds", fake_fetch_raw_odds)
+
+    results = []
+    async for events in scraper.poll(interval_seconds=0.01):
+        results.append(events)
+        if len(results) == 3:
+            break
+
+    assert len(results) == 3
+    assert all(len(batch) == 1 and batch[0].home_team == "Andorra" for batch in results)
+
+
+@pytest.mark.asyncio
+async def test_poll_continues_past_a_transient_fetch_failure(monkeypatch):
+    import httpx
+
+    scraper = BetwayZAScraper()
+    call_count = 0
+
+    async def flaky_fetch_raw_odds():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise httpx.ConnectError("simulated network blip")
+        return SAMPLE_RAW_PAYLOAD
+
+    monkeypatch.setattr(scraper, "fetch_raw_odds", flaky_fetch_raw_odds)
+
+    results = []
+    async for events in scraper.poll(interval_seconds=0.01):
+        results.append(events)
+        break  # first successful yield should be the second call, after the failure
+
+    assert call_count == 2
+    assert len(results) == 1
+    assert results[0][0].home_team == "Andorra"

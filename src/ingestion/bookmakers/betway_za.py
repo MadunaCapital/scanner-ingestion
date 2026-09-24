@@ -11,6 +11,9 @@ Endpoint discovered by ordinary browsing (Playwright, no stealth plugins)
 of the public site and inspecting the requests the page itself made.
 """
 
+import asyncio
+import logging
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
 import httpx
@@ -18,7 +21,14 @@ import httpx
 from ingestion.base_scraper import BaseScraper
 from schemas import MarketOdds, OddsEvent
 
+logger = logging.getLogger(__name__)
+
 BETWAY_ZA_HIGHLIGHTS_URL = "https://www.betway.co.za/sportsapi/br/v1/BetBook/Highlights/"
+
+# Plain, fixed-interval polling -- same cadence as a normal page refresh,
+# not randomized or disguised to look human. See the README's scope note:
+# this is "being a reasonable API consumer," not evasion.
+DEFAULT_POLL_INTERVAL_SECONDS = 45
 
 # marketTypeCName -> universal market key, per the plan's market-mapping
 # approach (scanner-engine/formatting.py does the same for other bookmakers).
@@ -124,6 +134,24 @@ class BetwayZAScraper(BaseScraper):
                 )
 
         return odds_events
+
+    async def poll(
+        self, interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
+    ) -> AsyncIterator[list[OddsEvent]]:
+        """Fetches odds on a fixed interval and yields the parsed events each
+        time. A transient fetch failure (network blip, momentary 5xx) is
+        logged and the loop continues on schedule rather than crashing --
+        the freshness circuit breaker downstream is what protects against
+        acting on odds that are actually stale, not this loop.
+        """
+        while True:
+            try:
+                raw = await self.fetch_raw_odds()
+                yield self.to_odds_events(raw)
+            except httpx.HTTPError as exc:
+                logger.warning("%s: poll fetch failed: %s", self.bookmaker_id, exc)
+
+            await asyncio.sleep(interval_seconds)
 
     async def close(self) -> None:
         await self._client.aclose()
