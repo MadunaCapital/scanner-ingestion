@@ -10,13 +10,11 @@ scraping method produced the OddsEvents.
 import logging
 
 from redis.asyncio import Redis
-from schemas import OddsEvent
+from schemas import RAW_ODDS_CHANNEL, OddsEvent
 
 from ingestion.base_scraper import BaseScraper
 
 logger = logging.getLogger(__name__)
-
-RAW_ODDS_CHANNEL = "raw_odds_events"
 
 
 async def publish_odds_events(redis: Redis, events: list[OddsEvent]) -> None:

@@ -4,28 +4,19 @@ Shared scraper toolkit for the MadunaCapital arbitrage scanner. This repo has no
 
 ## Contents
 
-- `src/ingestion/base_scraper.py` — abstract base class every bookmaker adapter implements: `fetch_raw_odds()`, `to_odds_events()`, and the data-freshness circuit breaker from the hardening addendum. **Zero dependencies.**
-- `src/ingestion/proxy.py` — proxy config loaded from env (`PROXY_URL`), injected via AWS SSM in production, never hardcoded. Zero dependencies.
-- `src/ingestion/http_client.py`, `src/ingestion/cloudflare_session.py` — TLS-impersonated HTTP client and Cloudflare-challenge-solving infrastructure, behind the `stealth` extra (`pip install maduna-scanner-ingestion[stealth]`). **Not currently used by any bookmaker** — Betway ZA's public feed doesn't need it. Kept for a bookmaker that turns out to actually gate its odds behind a WAF.
+- `src/ingestion/base_scraper.py` — abstract base class every bookmaker adapter implements: `fetch_raw_odds()`, `to_odds_events()`, and the data-freshness circuit breaker from the hardening addendum
+- `src/ingestion/raw_publisher.py` — generic helper (`run_scraper_loop`, `publish_odds_events`) that drives a scraper's `poll()` loop and publishes each batch to Redis; both bookmaker repos' `__main__.py` are just a few lines calling this
 
 ## Installing this as a dependency
-
-A bookmaker repo that only needs `BaseScraper` (like Betway ZA) installs the base package:
 
 ```
 maduna-scanner-ingestion @ git+https://github.com/MadunaCapital/scanner-ingestion.git
 ```
 
-A bookmaker repo that actually needs the Cloudflare/stealth toolkit installs the extra:
-
-```
-maduna-scanner-ingestion[stealth] @ git+https://github.com/MadunaCapital/scanner-ingestion.git
-```
-
 ## Status
 
-Toolkit built and tested (12 passing tests: proxy config, freshness circuit breaker, Cloudflare cookie extraction). No bookmaker adapters live here anymore — see `scanner-ingestion-betway-za` for the first one.
+Toolkit built and tested (13 passing tests: freshness circuit breaker, generic Redis publisher). No bookmaker adapters live here — see `scanner-ingestion-betway-za` and `scanner-ingestion-wsb`.
 
-## Scope note
+## History
 
-The `stealth` extra exists for a bookmaker that actually needs it. Read that bookmaker's own repo README for its scope note before assuming this toolkit's presence implies evasion is in use — Betway ZA's adapter deliberately doesn't use it.
+This repo previously carried a `stealth` extra (TLS-impersonated HTTP client + Cloudflare-challenge-solving infrastructure), built on the original plan's assumption that bookmakers would need anti-bot evasion. Stripped out once real experience across 5 bookmakers showed it wasn't earning its place: the 2 working scrapers (Betway ZA, WSB) both use plain, unauthenticated public endpoints, and the 3 harder ones (Hollywoodbets, Sportingbet ZA, Bet.co.za) need different things entirely (undocumented API params, WebSocket/SignalR push, or a Kambi-style session widget) — not TLS fingerprinting. If a genuinely WAF-protected bookmaker ever turns up, that's a real legal/technical decision to make fresh, not something worth pre-building speculatively.
